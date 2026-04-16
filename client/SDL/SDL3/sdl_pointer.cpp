@@ -193,10 +193,48 @@ bool sdl_Pointer_Set_Process(SdlContext* sdl)
 		WLog_Print(sdl->getWLog(), WLOG_ERROR, "SDL_BlitSurfaceScaled failed");
 		return false;
 	}
-	if (!SDL_AddSurfaceAlternateImage(normal.get(), ptr->image))
+	// When the server pre-scales the cursor for HiDPI (desktopScaleFactor
+	// > 100 on the primary monitor), the sprite already arrives at 2x (or
+	// more) size. Adding it as an alternate image would tell SDL to use
+	// it as the HiDPI variant of the logical-size "normal" surface, and
+	// SDL would scale it yet again on display pixel density — producing
+	// a cursor 2x too large. Skip the alternate image in that case and
+	// let SDL upscale the logical-size surface itself.
+	//
+	// Branch on the per-monitor negotiated scale from the monitor layout,
+	// not settings->DesktopScaleFactor: the latter is a command-line
+	// override, not authoritative for what the server actually used.
+	// Primary monitor is the relevant axis — the server sizes cursors
+	// based on the primary's DPI as reported by the client at connect.
+	UINT32 primaryScale = 100;
 	{
-		WLog_Print(sdl->getWLog(), WLOG_ERROR, "SDL_AddSurfaceAlternateImage failed");
-		return false;
+		const auto settings = context->settings;
+		const auto count = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
+		bool found = false;
+		for (UINT32 i = 0; i < count; ++i)
+		{
+			const auto* mon = static_cast<const rdpMonitor*>(
+			    freerdp_settings_get_pointer_array(settings, FreeRDP_MonitorDefArray, i));
+			if (mon && mon->is_primary)
+			{
+				primaryScale = mon->attributes.desktopScaleFactor;
+				found = true;
+				break;
+			}
+		}
+		// No monitor layout negotiated (happens on simple single-mon
+		// paths) — fall back to the settings value.
+		if (!found)
+			primaryScale = freerdp_settings_get_uint32(settings, FreeRDP_DesktopScaleFactor);
+	}
+	const bool serverPreScaled = primaryScale > 100;
+	if (!serverPreScaled)
+	{
+		if (!SDL_AddSurfaceAlternateImage(normal.get(), ptr->image))
+		{
+			WLog_Print(sdl->getWLog(), WLOG_ERROR, "SDL_AddSurfaceAlternateImage failed");
+			return false;
+		}
 	}
 
 	auto x = static_cast<int>(pos.x);
