@@ -597,8 +597,98 @@ static SDL_Window* createDummy(SDL_DisplayID id)
 	return window;
 }
 
+/* Compositors known to place hidden/unmapped windows on the currently-focused
+ * output, regardless of SDL_WINDOWPOS_CENTERED_DISPLAY(id). On these, the
+ * dummy-window-based monitor query returns the focused display's scale for
+ * every target display — inflating external monitors to the laptop's HiDPI
+ * scale on mixed setups.
+ *
+ * wlroots-based: Sway, Hyprland, river. Smithay-based: Niri (confirmed
+ * empirically to share the same behavior despite the different framework).
+ *
+ * For these, fall back to per-display APIs (SDL_GetDisplayBounds +
+ * SDL_GetDesktopDisplayMode->pixel_density), which read SDL_DisplayData
+ * directly and don't depend on window placement. Elsewhere, keep the
+ * dummy-window path as the authoritative source (per akallabeth's point
+ * that window-scoped APIs are SDL's intended query surface).
+ */
+static bool isPerDisplayQueryNeeded()
+{
+	const auto override_env = SDL_getenv("FREERDP_PER_DISPLAY_QUERY");
+	if (override_env != nullptr)
+		return strcmp(override_env, "0") != 0;
+
+	const auto platform = SDL_GetPlatform();
+	if ((platform == nullptr) || (strcmp(platform, "Linux") != 0))
+		return false;
+
+	const auto driver = SDL_GetCurrentVideoDriver();
+	if ((driver == nullptr) || (strcmp(driver, "wayland") != 0))
+		return false;
+
+	auto matchesKnownBuggy = [](const char* value) -> bool
+	{
+		if (!value)
+			return false;
+		return strstr(value, "sway") || strstr(value, "Sway") ||
+		       strstr(value, "Hyprland") || strstr(value, "hyprland") ||
+		       strstr(value, "river") || strstr(value, "wlroots") ||
+		       strstr(value, "niri") || strstr(value, "Niri");
+	};
+
+	return matchesKnownBuggy(SDL_getenv("XDG_SESSION_DESKTOP")) ||
+	       matchesKnownBuggy(SDL_getenv("XDG_CURRENT_DESKTOP"));
+}
+
+static bool queryDisplayGeometry(SDL_DisplayID id, SDL_Rect& bounds, float& scale)
+{
+	if (!SDL_GetDisplayBounds(id, &bounds))
+		return false;
+
+	const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(id);
+	if (!mode)
+		return false;
+
+	scale = (mode->pixel_density > 0.0f) ? mode->pixel_density : 1.0f;
+	return true;
+}
+
+static int scalePx(int dim, float scale)
+{
+	return static_cast<int>(std::roundf(static_cast<float>(dim) * scale));
+}
+
 rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
 {
+	if (isPerDisplayQueryNeeded())
+	{
+		SDL_Rect bounds = {};
+		float scale = 1.0f;
+		if (!queryDisplayGeometry(id, bounds, scale))
+			return {};
+
+		const int physW = scalePx(bounds.w, scale);
+		const int physH = scalePx(bounds.h, scale);
+
+		const auto primary = SDL_GetPrimaryDisplay();
+		const auto orientation = SDL_GetCurrentDisplayOrientation(id);
+
+		rdpMonitor monitor{};
+		monitor.orig_screen = id;
+		monitor.x = forceAsPrimary ? 0 : bounds.x;
+		monitor.y = forceAsPrimary ? 0 : bounds.y;
+		monitor.width = physW;
+		monitor.height = physH;
+		monitor.is_primary = forceAsPrimary || (id == primary);
+		monitor.attributes.desktopScaleFactor =
+		    static_cast<UINT32>(std::roundf(scale * 100.0f));
+		monitor.attributes.deviceScaleFactor = 100;
+		monitor.attributes.orientation = sdl::utils::orientaion_to_rdp(orientation);
+		monitor.attributes.physicalWidth = WINPR_ASSERTING_INT_CAST(uint32_t, physW);
+		monitor.attributes.physicalHeight = WINPR_ASSERTING_INT_CAST(uint32_t, physH);
+		return monitor;
+	}
+
 	std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(createDummy(id), SDL_DestroyWindow);
 	if (!window)
 		return {};
@@ -618,6 +708,21 @@ rdpMonitor SdlWindow::query(SDL_DisplayID id, bool forceAsPrimary)
 
 SDL_Rect SdlWindow::rect(SDL_DisplayID id, bool forceAsPrimary)
 {
+	if (isPerDisplayQueryNeeded())
+	{
+		SDL_Rect bounds = {};
+		float scale = 1.0f;
+		if (!queryDisplayGeometry(id, bounds, scale))
+			return {};
+
+		SDL_Rect r = {};
+		r.x = forceAsPrimary ? 0 : bounds.x;
+		r.y = forceAsPrimary ? 0 : bounds.y;
+		r.w = scalePx(bounds.w, scale);
+		r.h = scalePx(bounds.h, scale);
+		return r;
+	}
+
 	std::unique_ptr<SDL_Window, void (*)(SDL_Window*)> window(createDummy(id), SDL_DestroyWindow);
 	if (!window)
 		return {};
