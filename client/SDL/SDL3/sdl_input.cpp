@@ -562,6 +562,15 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 	const UINT32 rdp_scancode = scancode_to_rdp(ev.scancode);
 	const SDL_Keymod mods = SDL_GetModState();
 
+	// Never forward Super/Win (LGUI/RGUI) keysyms to the remote session, so the
+	// local WM (e.g. Niri) owns Super-based shortcuts unconditionally. SDL's mod
+	// bitmask stays correct because SDL updates it before delivering events, so
+	// chorded hotkeys that include Super (e.g. Super+R for toggle-resize) still
+	// match in the block below — we only drop the standalone key-down/up that
+	// would have produced VK_LWIN / VK_RWIN on the remote.
+	if (ev.scancode == SDL_SCANCODE_LGUI || ev.scancode == SDL_SCANCODE_RGUI)
+		return true;
+
 	if (_hotkeysEnabled && (mods & _hotkeyModmask) == _hotkeyModmask)
 	{
 		if (ev.type == SDL_EVENT_KEY_DOWN)
