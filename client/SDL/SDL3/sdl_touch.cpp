@@ -173,6 +173,12 @@ bool SdlTouch::handleEvent(SdlContext* sdl, const SDL_MouseButtonEvent& ev)
 		case 5:
 			xflags |= PTR_XFLAGS_BUTTON2;
 			break;
+		case 6:
+			xflags |= PTR_XFLAGS_BUTTON2;
+			break;
+		case 7:
+			xflags |= PTR_XFLAGS_BUTTON1;
+			break;
 		default:
 			break;
 	}
